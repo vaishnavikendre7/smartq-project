@@ -1,0 +1,365 @@
+// SmartQ database schema (MySQL, database: my_app_db)
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  CITIZEN
+  OFFICER
+  ADMIN
+}
+
+enum TokenStatus {
+  WAITING
+  CALLED
+  SERVING
+  COMPLETED
+  SKIPPED
+  CANCELLED
+  EXPIRED
+}
+
+enum AppointmentStatus {
+  BOOKED
+  CANCELLED
+  COMPLETED
+  MISSED
+}
+
+enum ApplicationStatus {
+  SUBMITTED
+  DOCUMENTS_UNDER_VERIFICATION
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum ComplaintStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+}
+
+// ---------------- USERS ----------------
+model User {
+  id                  Int      @id @default(autoincrement())
+  name                String   @db.VarChar(100)
+  email               String   @unique @db.VarChar(150)
+  phone               String   @db.VarChar(15)
+  passwordHash        String   @db.VarChar(100)
+  role                Role     @default(CITIZEN)
+  isActive            Boolean  @default(true)
+  canHandleComplaints Boolean  @default(false)
+  createdAt           DateTime @default(now())
+
+  assignments      OfficerAssignment[]
+  appointments     Appointment[]
+  tokens           Token[]              @relation("TokenOwner")
+  handledTokens    Token[]              @relation("TokenHandler")
+  tokenChanges     TokenHistory[]
+  applications     Application[]
+  applicationEdits ApplicationHistory[]
+  notifications    Notification[]
+  feedback         Feedback[]
+  complaints       Complaint[]
+  complaintReplies ComplaintResponse[]
+  checklist        ChecklistProgress[]
+  logs             ActivityLog[]
+}
+
+// ---------------- OFFICES / DEPARTMENTS / SERVICES ----------------
+model Office {
+  id              Int      @id @default(autoincrement())
+  name            String   @unique @db.VarChar(150)
+  address         String   @db.VarChar(255)
+  phone           String?  @db.VarChar(20)
+  openTime        String   @default("10:00") @db.VarChar(5)
+  closeTime       String   @default("17:00") @db.VarChar(5)
+  slotMinutes     Int      @default(30)
+  slotCapacity    Int      @default(3)
+  dailyTokenLimit Int      @default(300)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+
+  departments    Department[]
+  officeServices OfficeService[]
+  assignments    OfficerAssignment[]
+  appointments   Appointment[]
+  tokens         Token[]
+  applications   Application[]
+  feedback       Feedback[]
+  complaints     Complaint[]
+}
+
+model Department {
+  id       Int    @id @default(autoincrement())
+  officeId Int
+  name     String @db.VarChar(120)
+
+  office         Office              @relation(fields: [officeId], references: [id], onDelete: Cascade)
+  officeServices OfficeService[]
+  assignments    OfficerAssignment[]
+
+  @@unique([officeId, name])
+}
+
+model Service {
+  id          Int     @id @default(autoincrement())
+  name        String  @unique @db.VarChar(120)
+  code        String  @unique @db.VarChar(5)
+  description String? @db.Text
+  avgMinutes  Int     @default(10)
+  isActive    Boolean @default(true)
+
+  documents      RequiredDocument[]
+  officeServices OfficeService[]
+  appointments   Appointment[]
+  tokens         Token[]
+  applications   Application[]
+}
+
+model RequiredDocument {
+  id        Int    @id @default(autoincrement())
+  serviceId Int
+  name      String @db.VarChar(150)
+
+  service  Service             @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  progress ChecklistProgress[]
+
+  @@index([serviceId])
+}
+
+model ChecklistProgress {
+  id                 Int     @id @default(autoincrement())
+  userId             Int
+  requiredDocumentId Int
+  isReady            Boolean @default(true)
+
+  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  document RequiredDocument @relation(fields: [requiredDocumentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, requiredDocumentId])
+}
+
+// Which office offers which service, under which department
+model OfficeService {
+  id           Int     @id @default(autoincrement())
+  officeId     Int
+  serviceId    Int
+  departmentId Int?
+  isAvailable  Boolean @default(true)
+  dailyLimit   Int     @default(100)
+
+  office     Office      @relation(fields: [officeId], references: [id], onDelete: Cascade)
+  service    Service     @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  department Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  @@unique([officeId, serviceId])
+}
+
+// An officer works for one department of one office (can have several rows)
+model OfficerAssignment {
+  id           Int @id @default(autoincrement())
+  officerId    Int
+  officeId     Int
+  departmentId Int
+
+  officer    User       @relation(fields: [officerId], references: [id], onDelete: Cascade)
+  office     Office     @relation(fields: [officeId], references: [id], onDelete: Cascade)
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+
+  @@unique([officerId, officeId, departmentId])
+}
+
+// ---------------- APPOINTMENTS & TOKENS ----------------
+model Appointment {
+  id        Int               @id @default(autoincrement())
+  userId    Int
+  officeId  Int
+  serviceId Int
+  date      DateTime          @db.Date
+  slotTime  String            @db.VarChar(5)
+  status    AppointmentStatus @default(BOOKED)
+  createdAt DateTime          @default(now())
+
+  user    User    @relation(fields: [userId], references: [id])
+  office  Office  @relation(fields: [officeId], references: [id])
+  service Service @relation(fields: [serviceId], references: [id])
+  token   Token?
+
+  @@index([officeId, serviceId, date, slotTime])
+}
+
+// One row per office + service + date. Used to give each token a unique, safe sequence number.
+model TokenSequence {
+  officeId   Int
+  serviceId  Int
+  seqDate    DateTime @db.Date
+  lastNumber Int      @default(0)
+
+  @@id([officeId, serviceId, seqDate])
+}
+
+model Token {
+  id            Int         @id @default(autoincrement())
+  tokenNumber   String      @db.VarChar(20)
+  seq           Int
+  userId        Int
+  officeId      Int
+  serviceId     Int
+  appointmentId Int?        @unique
+  tokenDate     DateTime    @db.Date
+  queueTime     DateTime
+  status        TokenStatus @default(WAITING)
+  verifyCode    String      @unique @db.VarChar(40)
+  isVerified    Boolean     @default(false)
+  verifiedAt    DateTime?
+  verifiedById  Int?
+  handledById   Int?
+  createdAt     DateTime    @default(now())
+  calledAt      DateTime?
+  servingAt     DateTime?
+  completedAt   DateTime?
+
+  user        User           @relation("TokenOwner", fields: [userId], references: [id])
+  handledBy   User?          @relation("TokenHandler", fields: [handledById], references: [id], onDelete: SetNull)
+  office      Office         @relation(fields: [officeId], references: [id])
+  service     Service        @relation(fields: [serviceId], references: [id])
+  appointment Appointment?   @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  history     TokenHistory[]
+  feedback    Feedback?
+
+  @@unique([officeId, serviceId, tokenDate, seq])
+  @@index([officeId, tokenDate, status])
+  @@index([userId])
+}
+
+model TokenHistory {
+  id          Int      @id @default(autoincrement())
+  tokenId     Int
+  fromStatus  String?  @db.VarChar(20)
+  toStatus    String   @db.VarChar(20)
+  changedById Int?
+  note        String?  @db.VarChar(255)
+  createdAt   DateTime @default(now())
+
+  token     Token @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  changedBy User? @relation(fields: [changedById], references: [id], onDelete: SetNull)
+
+  @@index([tokenId])
+}
+
+// ---------------- DOCUMENT APPLICATIONS ----------------
+model Application {
+  id              Int               @id @default(autoincrement())
+  applicationCode String            @unique @db.VarChar(40)
+  userId          Int
+  officeId        Int
+  serviceId       Int
+  details         String            @db.Text
+  status          ApplicationStatus @default(SUBMITTED)
+  remark          String?           @db.VarChar(500)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  user    User                 @relation(fields: [userId], references: [id])
+  office  Office               @relation(fields: [officeId], references: [id])
+  service Service              @relation(fields: [serviceId], references: [id])
+  history ApplicationHistory[]
+
+  @@index([officeId, serviceId, status])
+  @@index([userId])
+}
+
+model ApplicationHistory {
+  id            Int               @id @default(autoincrement())
+  applicationId Int
+  status        ApplicationStatus
+  remark        String?           @db.VarChar(500)
+  changedById   Int?
+  createdAt     DateTime          @default(now())
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  changedBy   User?       @relation(fields: [changedById], references: [id], onDelete: SetNull)
+
+  @@index([applicationId])
+}
+
+// ---------------- NOTIFICATIONS ----------------
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  title     String   @db.VarChar(120)
+  message   String   @db.VarChar(500)
+  type      String   @db.VarChar(30)
+  isRead    Boolean  @default(false)
+  dedupeKey String?  @db.VarChar(80)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, isRead])
+}
+
+// ---------------- FEEDBACK & COMPLAINTS ----------------
+model Feedback {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  officeId  Int
+  tokenId   Int      @unique
+  rating    Int
+  comment   String?  @db.VarChar(500)
+  createdAt DateTime @default(now())
+
+  user   User   @relation(fields: [userId], references: [id])
+  office Office @relation(fields: [officeId], references: [id])
+  token  Token  @relation(fields: [tokenId], references: [id])
+}
+
+model Complaint {
+  id            Int             @id @default(autoincrement())
+  complaintCode String          @unique @db.VarChar(40)
+  userId        Int
+  officeId      Int?
+  subject       String          @db.VarChar(150)
+  description   String          @db.Text
+  status        ComplaintStatus @default(OPEN)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  user      User                @relation(fields: [userId], references: [id])
+  office    Office?             @relation(fields: [officeId], references: [id], onDelete: SetNull)
+  responses ComplaintResponse[]
+
+  @@index([status])
+}
+
+model ComplaintResponse {
+  id          Int      @id @default(autoincrement())
+  complaintId Int
+  responderId Int
+  message     String   @db.VarChar(1000)
+  createdAt   DateTime @default(now())
+
+  complaint Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  responder User      @relation(fields: [responderId], references: [id])
+}
+
+// ---------------- SYSTEM LOGS ----------------
+model ActivityLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int?
+  action    String   @db.VarChar(60)
+  details   String?  @db.VarChar(500)
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+}

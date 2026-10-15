@@ -1,0 +1,33 @@
+{
+  "name": "smartq-backend",
+  "version": "1.0.0",
+  "description": "SmartQ - Digital Queue Management and Government Document Application Tracking System (API)",
+  "main": "src/server.js",
+  "private": true,
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js",
+    "db:migrate": "prisma migrate dev",
+    "db:generate": "prisma generate",
+    "db:seed": "node prisma/seed.js",
+    "db:studio": "prisma studio",
+    "test:api": "node tests/api.test.js"
+  },
+  "dependencies": {
+    "@prisma/client": "6.19.3",
+    "bcrypt": "6.0.0",
+    "cookie-parser": "1.4.7",
+    "cors": "2.8.6",
+    "dotenv": "18.0.7",
+    "express": "4.22.3",
+    "jsonwebtoken": "9.0.3",
+    "nodemailer": "10.1.0"
+  },
+  "devDependencies": {
+    "nodemon": "3.1.14",
+    "prisma": "6.19.3"
+  }
+}
